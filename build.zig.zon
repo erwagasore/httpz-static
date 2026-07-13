@@ -1,0 +1,19 @@
+.{
+    .name = .httpz_static,
+    .version = "0.1.0",
+    .fingerprint = 0xcd7e865f0af9864a, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .httpz = .{
+            .url = "https://github.com/karlseguin/http.zig/archive/01dc09453ae50b82cc74ac2f90e9cd57e0b38500.tar.gz",
+            .hash = "httpz-0.0.0-PNVzrEnoCAAwAtnht2430lpr-ynyNpLeTpoy_-lmWyhD",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
