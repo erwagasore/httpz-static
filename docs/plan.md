@@ -32,9 +32,9 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
 - [ ] **feat(middleware): manage configured mount roots**
 
-  Implement `Mount`, `Config`, `init`, and `deinit` in `src/root.zig` using httpz's middleware arena/allocator lifecycle; open configured directories once relative to the working directory with no-follow behavior where supported; reject invalid configuration; and clean up all owned handles and allocations, including partial initialization failures. Follow `SPEC.md:40`, `SPEC.md:89`, and `SPEC.md:149`.
+  Implement `Mount`, `Config`, `init`, and `deinit` in `src/root.zig` using httpz's middleware arena/allocator lifecycle; initialize the MIME resolver with `MiddlewareConfig.allocator` rather than its arena; open configured directories once relative to the working directory with no-follow behavior where supported; reject invalid configuration; and clean up all owned handles and allocations, including partial initialization failures. Follow `SPEC.md:40`, `SPEC.md:89`, and `SPEC.md:149`.
 
-  *Done when:* Tests verify valid multi-mount initialization, malformed and duplicate-prefix rejection, retained root handles, deterministic teardown, and cleanup after initialization or allocation failure.
+  *Done when:* Tests verify valid multi-mount and MIME-resolver initialization, malformed and duplicate-prefix rejection, retained root handles, deterministic teardown, and cleanup after initialization or allocation failure.
 
 - [ ] **feat(middleware): serve static file requests**
 

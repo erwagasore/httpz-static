@@ -1,11 +1,13 @@
 const std = @import("std");
 
-pub const fallback = "application/octet-stream";
+const fallback = "application/octet-stream";
 
 pub const MimeMapping = struct {
-    /// Final file extension, including the leading dot.
+    /// One final printable-ASCII extension including its leading dot. Additional
+    /// dots, whitespace, and path separators are rejected during initialization.
     extension: []const u8,
-    /// Complete value for the HTTP `Content-Type` header.
+    /// A valid media `type/subtype` followed by optional printable-ASCII
+    /// parameters. Control bytes are rejected during initialization.
     content_type: []const u8,
 };
 
@@ -17,10 +19,17 @@ pub const MimeMappingError = error{
 
 /// Resolves file paths using validated, deeply owned user overrides before
 /// consulting the built-in MIME table and binary fallback.
+///
+/// This is an owning type: call `deinit` exactly once, do not copy it after
+/// initialization, and do not retain values returned by `fromPath` past
+/// `deinit`.
 pub const MimeResolver = struct {
     arena: std.heap.ArenaAllocator,
     overrides: []MimeMapping,
 
+    /// `backing_allocator` must reclaim frees. Middleware initialization passes
+    /// `httpz.MiddlewareConfig.allocator`, never its arena allocator, so
+    /// `deinit` can release the resolver's dedicated arena deterministically.
     pub fn init(
         backing_allocator: std.mem.Allocator,
         overrides_to_copy: []const MimeMapping,
@@ -106,7 +115,7 @@ comptime {
 }
 
 /// Validates user-provided mappings once during middleware initialization.
-pub fn validateMappings(overrides: []const MimeMapping) MimeMappingError!void {
+fn validateMappings(overrides: []const MimeMapping) MimeMappingError!void {
     for (overrides, 0..) |mapping, index| {
         try validateMapping(mapping);
         for (overrides[0..index]) |previous| {
@@ -119,14 +128,14 @@ pub fn validateMappings(overrides: []const MimeMapping) MimeMappingError!void {
 
 /// Returns the content type associated with the final extension in `path`.
 /// Matching is ASCII case-insensitive and does not allocate.
-pub fn fromPath(path: []const u8) []const u8 {
+fn fromPath(path: []const u8) []const u8 {
     return fromPathWith(path, &.{});
 }
 
 /// Resolves prevalidated user overrides before consulting the built-in table.
 /// The result borrows static storage or an override content-type slice, so the
 /// overrides must outlive every response that uses the result.
-pub fn fromPathWith(path: []const u8, overrides: []const MimeMapping) []const u8 {
+fn fromPathWith(path: []const u8, overrides: []const MimeMapping) []const u8 {
     const extension = std.fs.path.extension(path);
     if (extension.len == 0) return fallback;
 
