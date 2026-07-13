@@ -22,7 +22,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
   *Done when:* Tests cover malformed and duplicate normalized prefixes, overlapping mounts, segment boundaries, and rejection of plain, encoded, and double-encoded traversal; malformed escapes; encoded separators; absolute paths; backslashes; and NUL bytes before filesystem access.
 
-- [ ] **feat(mime): add content type detection**
+- [x] **feat(mime): add content type detection**
 
   Add a compact static extension-to-MIME table and public `MimeMapping` override type in `src/mime.zig`, with ASCII case-insensitive matching, user-override precedence and validation, conventional UTF-8 charsets for textual types, and the required unknown-extension fallback. Follow `SPEC.md:103`, `SPEC.md:137`, and `SPEC.md:180` without adding a generated or runtime-allocated MIME registry.
 
@@ -40,7 +40,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
   Implement `execute` in `src/root.zig` for direct relative lookup beneath the selected retained root, regular-file `GET`, and bodyless `HEAD`; stat before allocation, enforce `Config.max_file_size`, set accurate headers, and use `executor.next()` for method or configured missing-file fallthrough. Follow `SPEC.md:103` and `SPEC.md:137`.
 
-  *Done when:* Middleware tests verify successful `GET` and allocation-free `HEAD` with matching headers, MIME fallback, configured size limits, methods outside the contract, missing and non-regular files, both missing-file policies, no per-request mount-tree walk, and propagation of unexpected filesystem failures.
+  *Done when:* Middleware tests verify successful `GET` and allocation-free `HEAD` with matching headers, MIME fallback, configured size limits, methods outside the contract, missing and non-regular files, both missing-file policies, no per-request mount-tree walk, propagation of unexpected filesystem failures, and compile-level registration through `server.middleware(Static, ...)`.
 
 ## Phase 3 — Verification and documentation
 
