@@ -64,7 +64,7 @@ const static = try server.middleware(Static, .{
 });
 ```
 
-The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary. `Config.max_file_size` is optional and defaults to unlimited; applications can set it to bound per-request file-body allocation.
+The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary. `Config.max_file_size` defaults to 64 MiB; applications may set another bound or explicitly use `null` for unlimited file-body allocation.
 
 The root module exposes the normal httpz middleware contract:
 
@@ -130,17 +130,17 @@ The pinned httpz version exposes `req.url.path` as the raw request path with the
 
 Configured root directories are opened once during initialization. Request lookup walks only the validated path components, opening each intermediate directory relative to the previous handle without following symlinks, then opens the final regular file with no-follow and resolve-beneath options. It must not scan or walk unrelated entries in the mount tree.
 
-Configured root symlinks and both intermediate and final request-path symlinks are denied. Unsupported or ambiguous platform behavior fails safely rather than claiming confinement it does not provide.
+Configured root symlinks and both intermediate and final request-path symlinks are denied. Unsupported or ambiguous platform behavior fails safely rather than claiming confinement it does not provide. Mounted trees are trusted against adversarial concurrent replacement with special files: metadata is checked before and after opening, but portable std.Io cannot make the metadata check and readable open one atomic operation.
 
 Unsafe paths are not passed to filesystem APIs. They receive `404` or fall through according to the same non-disclosure policy as missing files.
 
 ## Response and allocation model
 
-Files are opened and read only for the current request and are closed before `execute` returns. Any decoded path, content-length header, or file-body allocation uses the shared request/response arena and dies after the response is transmitted.
+Files are opened and read only for the current request and are closed before `execute` returns. Any decoded path, explicit `HEAD` content-length header, or file-body allocation uses the shared request/response arena and dies after the response is transmitted. For `GET`, httpz derives the single wire-level `Content-Length` from the body slice; the middleware sets it explicitly only for bodyless `HEAD`.
 
 File metadata is obtained before body allocation, and non-regular entries are rejected before a body read is attempted. `HEAD` follows the same validation, lookup, regular-file, size-limit, and header path as `GET`, then returns without allocating or reading a file body. `GET` allocates exactly the stat-reported size, reads positionally into that response-lifetime slice, and propagates short reads or unexpected I/O failures.
 
-`Config.max_file_size` is `?u64` and defaults to `null` (unlimited). When configured, a regular file larger than the limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. The limit is checked from file metadata before converting the size to `usize` or allocating a body.
+`Config.max_file_size` is `?u64` and defaults to 64 MiB. A regular file larger than the configured limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. `null` explicitly opts into unlimited buffering. The limit is checked from file metadata before converting the size to `usize` or allocating a body; peak per-request body memory is approximately the served file size.
 
 The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching and an optional, linearly searched slice of user overrides; it does not generate or allocate a runtime MIME registry. Override extensions and the media `type/subtype` are validated during initialization, duplicate override extensions are rejected case-insensitively, and optional parameter bytes are treated as opaque printable ASCII so they cannot inject response headers. The internal MIME resolver deep-copies the override slice and both strings in every mapping into a dedicated arena backed by `httpz.MiddlewareConfig.allocator`, never `MiddlewareConfig.arena`, and releases its arena during teardown. This provides deterministic rollback and cleanup, and callers do not need to retain configuration memory.
 

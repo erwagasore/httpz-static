@@ -14,6 +14,7 @@ pub const Mount = struct {
 };
 
 pub const MimeMapping = mime.MimeMapping;
+pub const default_max_file_size: u64 = 64 * 1024 * 1024;
 
 pub const Config = struct {
     /// Borrowed I/O implementation that must outlive the middleware.
@@ -24,8 +25,9 @@ pub const Config = struct {
     mounts: []const Mount,
     /// Continue the httpz chain when a matched file is unavailable or unsafe.
     fallthrough: bool = true,
-    /// Maximum served file size in bytes, or `null` for no configured limit.
-    max_file_size: ?u64 = null,
+    /// Maximum served file size in bytes. Set to `null` only for trusted,
+    /// externally bounded asset trees when unlimited request memory is acceptable.
+    max_file_size: ?u64 = default_max_file_size,
     /// Borrowed for initialization and deep-copied by the MIME resolver.
     mime_overrides: []const MimeMapping = &.{},
 };
@@ -104,6 +106,8 @@ pub fn deinit(self: *Static) void {
     self.* = undefined;
 }
 
+/// Serves a matching request. `GET` buffers the complete file in `res.arena`,
+/// so peak request memory is approximately the served file size.
 pub fn execute(
     self: *Static,
     req: *httpz.Request,
@@ -141,10 +145,13 @@ pub fn execute(
         if (bytes_read != size) return error.UnexpectedEndOfFile;
     }
 
-    const content_length = try std.fmt.allocPrint(res.arena, "{d}", .{opened.stat.size});
+    const content_length = if (req.method == .HEAD)
+        try std.fmt.allocPrint(res.arena, "{d}", .{opened.stat.size})
+    else
+        null;
     res.status = 200;
     res.header("Content-Type", self.mime_resolver.fromPath(relative_path));
-    res.header("Content-Length", content_length);
+    if (content_length) |value| res.header("Content-Length", value);
     res.body = allocated_body orelse "";
 }
 
@@ -244,13 +251,19 @@ test "execute serves GET from the longest matching mount" {
     try static.execute(ht.req, ht.res, &executor);
 
     try std.testing.expect(!executor.next_called);
-    try std.testing.expectEqual(@as(u16, 200), ht.res.status);
-    try std.testing.expectEqualStrings("specific", ht.res.body);
+    try std.testing.expectEqual(@as(?u64, default_max_file_size), static.max_file_size);
+    const response = try ht.parseResponse();
+    try std.testing.expectEqual(@as(u16, 200), response.status);
+    try std.testing.expectEqualStrings("specific", response.body);
     try std.testing.expectEqualStrings(
         "text/plain; charset=utf-8",
-        ht.res.headers.get("Content-Type").?,
+        response.headers.get("Content-Type").?,
     );
-    try std.testing.expectEqualStrings("8", ht.res.headers.get("Content-Length").?);
+    try std.testing.expectEqualStrings("8", response.headers.get("Content-Length").?);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, response.raw, "\r\nContent-Length:"),
+    );
 
     _ = httpz.Middleware(void).init(&static);
 }
@@ -279,12 +292,17 @@ test "execute serves HEAD headers without reading or allocating a body" {
     try static.execute(ht.req, ht.res, &executor);
 
     try std.testing.expect(!executor.next_called);
-    try std.testing.expectEqualStrings("", ht.res.body);
+    const response = try ht.parseResponse();
+    try std.testing.expectEqualStrings("", response.body);
     try std.testing.expectEqualStrings(
         "text/css; charset=utf-8",
-        ht.res.headers.get("Content-Type").?,
+        response.headers.get("Content-Type").?,
     );
-    try std.testing.expectEqualStrings("22", ht.res.headers.get("Content-Length").?);
+    try std.testing.expectEqualStrings("22", response.headers.get("Content-Length").?);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, response.raw, "\r\nContent-Length:"),
+    );
     try std.testing.expectEqual(@as(usize, 0), counting_io.file_read_count);
     try std.testing.expectEqual(@as(usize, 1), counting_io.closed_file_count);
 }
@@ -397,10 +415,19 @@ test "execute propagates unexpected file read failures" {
     var short_ht = httpz.testing.init(.{});
     defer short_ht.deinit();
     short_ht.url("/assets/file.txt");
+    var tracked_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{},
+    );
+    short_ht.res.arena = tracked_allocator.allocator();
     var short_executor: TestExecutor = .{};
     try std.testing.expectError(
         error.UnexpectedEndOfFile,
         static.execute(short_ht.req, short_ht.res, &short_executor),
+    );
+    try std.testing.expectEqual(
+        tracked_allocator.allocated_bytes,
+        tracked_allocator.freed_bytes,
     );
     try std.testing.expectEqual(@as(usize, 2), counting_io.closed_file_count);
 }
@@ -434,18 +461,14 @@ test "execute propagates request and response allocation failures" {
     {
         var ht = httpz.testing.init(.{});
         defer ht.deinit();
+        ht.req.method = .HEAD;
         ht.url("/assets/file.txt");
-        var failing = std.testing.FailingAllocator.init(
-            std.testing.allocator,
-            .{ .fail_index = 1 },
-        );
-        ht.res.arena = failing.allocator();
+        ht.res.arena = std.testing.failing_allocator;
         var executor: TestExecutor = .{};
         try std.testing.expectError(
             error.OutOfMemory,
             static.execute(ht.req, ht.res, &executor),
         );
-        try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
     }
     {
         var ht = httpz.testing.init(.{});
@@ -748,7 +771,8 @@ fn expectContentType(static: *Static, url: []const u8, expected: []const u8) !vo
 
     try static.execute(ht.req, ht.res, &executor);
     try std.testing.expect(!executor.next_called);
-    try std.testing.expectEqualStrings(expected, ht.res.headers.get("Content-Type").?);
+    const response = try ht.parseResponse();
+    try std.testing.expectEqualStrings(expected, response.headers.get("Content-Type").?);
 }
 
 const TestExecutor = struct {
