@@ -16,10 +16,11 @@ pub const Mount = struct {
 pub const MimeMapping = mime.MimeMapping;
 
 pub const Config = struct {
+    /// Borrowed I/O implementation that must outlive the middleware.
     io: std.Io,
-    /// Borrowed base directory; the middleware never closes it.
+    /// Borrowed only while `init` opens mount roots; the caller retains ownership.
     cwd: std.Io.Dir = .cwd(),
-    /// Borrowed for initialization; all retained values and handles are owned.
+    /// Borrowed only during initialization; all retained values and handles are owned.
     mounts: []const Mount,
     /// Continue the httpz chain when a matched file is unavailable or unsafe.
     fallthrough: bool = true,
@@ -40,6 +41,7 @@ pub const InitError = error{
 
 io: std.Io,
 arena: std.heap.ArenaAllocator,
+/// Parallel arrays: each prefix and root at the same index describe one mount.
 roots: []std.Io.Dir,
 prefixes: []const []const u8,
 mime_resolver: mime.MimeResolver,
@@ -95,6 +97,7 @@ pub fn init(config: Config, mc: httpz.MiddlewareConfig) InitError!Static {
 }
 
 pub fn deinit(self: *Static) void {
+    std.debug.assert(self.roots.len == self.prefixes.len);
     std.Io.Dir.closeMany(self.io, self.roots);
     self.mime_resolver.deinit();
     self.arena.deinit();
@@ -213,12 +216,14 @@ test "init rejects empty and malformed configuration" {
     );
 }
 
-test "init propagates root opening failures after closing earlier roots" {
-    const io = std.testing.io;
+test "init closes earlier roots after a later root fails to open" {
+    const inner_io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.createDir(io, "present", .default_dir);
+    try tmp.dir.createDir(inner_io, "present", .default_dir);
 
+    var counting_io = CloseCountingIo.init(inner_io);
+    const io = counting_io.io();
     try std.testing.expectError(
         error.FileNotFound,
         Static.init(.{
@@ -230,8 +235,7 @@ test "init propagates root opening failures after closing earlier roots" {
             },
         }, middlewareConfig(std.testing.allocator)),
     );
-
-    try tmp.dir.deleteDir(io, "present");
+    try std.testing.expectEqual(@as(usize, 1), counting_io.closed_count);
 }
 
 test "init does not follow a symlink used as a mount root" {
@@ -258,9 +262,40 @@ test "init does not follow a symlink used as a mount root" {
     }
 }
 
-test "directory paths allow trusted relative parent segments" {
-    try std.testing.expect(isRelativeDirectoryPath("../shared/assets"));
-    try std.testing.expect(isRelativeDirectoryPath("./assets"));
+test "init opens trusted parent-relative directory paths" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "base", .default_dir);
+    try tmp.dir.createDir(io, "shared", .default_dir);
+    const base = try tmp.dir.openDir(io, "base", .{});
+    defer base.close(io);
+
+    var static = try Static.init(.{
+        .io = io,
+        .cwd = base,
+        .mounts = &.{.{ .url_prefix = "/shared", .directory_path = "../shared" }},
+    }, middlewareConfig(std.testing.allocator));
+    defer static.deinit();
+
+    _ = try static.roots[0].stat(io);
+}
+
+test "init uses MiddlewareConfig.allocator for owned state" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "assets", .default_dir);
+
+    var static = try Static.init(.{
+        .io = io,
+        .cwd = tmp.dir,
+        .mounts = &.{.{ .url_prefix = "/assets", .directory_path = "assets" }},
+    }, .{
+        .arena = std.testing.failing_allocator,
+        .allocator = std.testing.allocator,
+    });
+    defer static.deinit();
 }
 
 test "init cleans up every allocation failure" {
@@ -296,6 +331,42 @@ fn initWithAllocationFailures(
     }, middlewareConfig(allocator));
     defer static.deinit();
 }
+
+const CloseCountingIo = struct {
+    inner: std.Io,
+    vtable: std.Io.VTable,
+    closed_count: usize = 0,
+
+    fn init(inner: std.Io) CloseCountingIo {
+        var result: CloseCountingIo = .{
+            .inner = inner,
+            .vtable = inner.vtable.*,
+        };
+        result.vtable.dirOpenDir = openDir;
+        result.vtable.dirClose = closeDirs;
+        return result;
+    }
+
+    fn io(self: *CloseCountingIo) std.Io {
+        return .{ .userdata = self, .vtable = &self.vtable };
+    }
+
+    fn openDir(
+        userdata: ?*anyopaque,
+        dir: std.Io.Dir,
+        sub_path: []const u8,
+        options: std.Io.Dir.OpenOptions,
+    ) std.Io.Dir.OpenError!std.Io.Dir {
+        const self: *CloseCountingIo = @ptrCast(@alignCast(userdata.?));
+        return self.inner.vtable.dirOpenDir(self.inner.userdata, dir, sub_path, options);
+    }
+
+    fn closeDirs(userdata: ?*anyopaque, dirs: []const std.Io.Dir) void {
+        const self: *CloseCountingIo = @ptrCast(@alignCast(userdata.?));
+        self.closed_count += dirs.len;
+        self.inner.vtable.dirClose(self.inner.userdata, dirs);
+    }
+};
 
 fn middlewareConfig(allocator: std.mem.Allocator) httpz.MiddlewareConfig {
     return .{ .arena = allocator, .allocator = allocator };
