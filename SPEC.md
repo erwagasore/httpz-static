@@ -83,7 +83,7 @@ pub fn execute(
 
 Each mount maps exactly one URL prefix to one directory. This gives every filesystem root an explicit public namespace and avoids implicit search-path behavior.
 
-- Prefixes must begin with `/`.
+- Prefixes must begin with `/` and must not contain empty interior segments, `.` or `..` segments, backslashes, percent escapes, NUL bytes, or query/fragment markers.
 - Prefixes are normalized without a trailing slash, except `/` itself.
 - Matching respects segment boundaries: `/assets` matches `/assets/logo.svg` but not `/assets-old/logo.svg`.
 - When prefixes overlap, the longest matching prefix wins regardless of declaration order.

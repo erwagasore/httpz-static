@@ -10,7 +10,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
 ## Phase 1 — Foundation
 
-- [ ] **chore(build): scaffold the Zig package**
+- [x] **chore(build): scaffold the Zig package**
 
   Add `build.zig`, `build.zig.zon`, and `src/root.zig`; pin httpz; and provide formatting, compile-check, test, and local CI build steps. Follow the testing contract and initial source layout in `SPEC.md:150` and `SPEC.md:173`.
 
