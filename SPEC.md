@@ -58,6 +58,9 @@ const static = try server.middleware(Static, .{
         },
     },
     .fallthrough = true,
+    .mime_overrides = &.{
+        .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
+    },
 });
 ```
 
@@ -67,6 +70,10 @@ The root module exposes the normal httpz middleware contract:
 
 ```zig
 pub const Mount = struct { ... };
+pub const MimeMapping = struct {
+    extension: []const u8,
+    content_type: []const u8,
+};
 pub const Config = struct { ... };
 
 pub fn init(config: Config, mc: httpz.MiddlewareConfig) !Static;
@@ -104,7 +111,7 @@ Overlay/search-path directories under one prefix are outside the first release. 
 - When a matched file is missing, `fallthrough = true` calls `executor.next()` and `fallthrough = false` returns `404`.
 - Unexpected filesystem failures propagate as server errors rather than being disguised as missing files.
 
-Successful responses include an extension-derived `Content-Type` and accurate `Content-Length`. Extension matching is ASCII case-insensitive. Textual types include an appropriate UTF-8 charset where conventional, and unknown extensions use `application/octet-stream`.
+Successful responses include an extension-derived `Content-Type` and accurate `Content-Length`. Extension matching is ASCII case-insensitive. Textual types include an appropriate UTF-8 charset where conventional, and unknown extensions use `application/octet-stream`. `Config.mime_overrides` defaults to an empty slice; configured mappings are checked before the built-in table, allowing applications to add new extensions or replace built-in content types.
 
 ## Path security
 
@@ -135,13 +142,13 @@ File metadata is obtained before body allocation. `HEAD` follows the same valida
 
 `Config.max_file_size` is `?u64` and defaults to `null` (unlimited). When configured, a regular file larger than the limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. The limit is checked from file metadata before converting the size to `usize` or allocating a body.
 
-The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching; it does not generate or allocate a runtime MIME registry.
+The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching and an optional, linearly searched slice of user overrides; it does not generate or allocate a runtime MIME registry. Override extensions and the media `type/subtype` are validated during initialization, duplicate override extensions are rejected case-insensitively, and optional parameter bytes are treated as opaque printable ASCII so they cannot inject response headers. The internal MIME resolver deep-copies the override slice and both strings in every mapping into a dedicated arena backed by `httpz.MiddlewareConfig.allocator`, never `MiddlewareConfig.arena`, and releases its arena during teardown. This provides deterministic rollback and cleanup, and callers do not need to retain configuration memory.
 
 The middleware does not add cache-control, ETag, compression, range, `X-Content-Type-Options`, or transformation behavior. Such features remain independently composable.
 
 ## Errors and diagnostics
 
-- Invalid static configuration fails middleware initialization.
+- Invalid static configuration, including malformed or duplicate MIME overrides, fails middleware initialization.
 - Configuration errors use a closed package error set where practical.
 - Missing files and unsafe paths are ordinary request outcomes, not logged server failures.
 - Permission, I/O, allocation, and unexpected filesystem errors propagate.
@@ -157,7 +164,7 @@ Tests are colocated with implementation where practical and use temporary direct
 - duplicate and malformed-prefix rejection,
 - successful `GET`,
 - bodyless `HEAD` with matching headers,
-- case-insensitive MIME detection, textual charsets, and unknown-extension fallback,
+- case-insensitive MIME detection, textual charsets, user-override precedence and validation, and unknown-extension fallback,
 - fallthrough and strict `404`,
 - configured file-size limits for `GET` and `HEAD` without body allocation,
 - missing files and non-regular entries,
