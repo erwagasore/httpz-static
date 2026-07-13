@@ -61,7 +61,7 @@ const static = try server.middleware(Static, .{
 });
 ```
 
-The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary.
+The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary. `Config.max_file_size` is optional and defaults to unlimited; applications can set it to bound per-request file-body allocation.
 
 The root module exposes the normal httpz middleware contract:
 
@@ -104,7 +104,7 @@ Overlay/search-path directories under one prefix are outside the first release. 
 - When a matched file is missing, `fallthrough = true` calls `executor.next()` and `fallthrough = false` returns `404`.
 - Unexpected filesystem failures propagate as server errors rather than being disguised as missing files.
 
-Successful responses include an extension-derived `Content-Type` and accurate `Content-Length`. Unknown extensions use `application/octet-stream`.
+Successful responses include an extension-derived `Content-Type` and accurate `Content-Length`. Extension matching is ASCII case-insensitive. Textual types include an appropriate UTF-8 charset where conventional, and unknown extensions use `application/octet-stream`.
 
 ## Path security
 
@@ -119,7 +119,9 @@ Before opening a file, the middleware must reject paths containing or resolving 
 - percent-encoded traversal or separator ambiguity,
 - platform-specific path forms that escape the selected root.
 
-The implementation must establish how the pinned httpz version exposes decoded versus raw request paths before finalizing normalization. Validation occurs at the representation where encoded traversal cannot bypass checks.
+The pinned httpz version exposes `req.url.path` as the raw request path with the query removed but without percent-decoding. The middleware first validates that raw representation, rejecting malformed escapes and encoded traversal or separator ambiguity. It then percent-decodes exactly once into the request arena and validates the decoded relative path again before any filesystem access. A decoded path that still contains percent-encoded traversal or separators is rejected as ambiguous rather than decoded a second time.
+
+Configured root directories are opened once during initialization. Request lookup opens the validated relative path directly beneath the selected root; it must not scan or walk the entire mount tree per request.
 
 Symlink behavior must be tested and documented before the first release. The default posture is deny escape through symlinks; if Zig's portable std.Io surface cannot guarantee that policy, initialization or lookup must fail safely rather than claim confinement it does not provide.
 
@@ -127,9 +129,15 @@ Unsafe paths are not passed to filesystem APIs. They receive `404` or fall throu
 
 ## Response and allocation model
 
-The implementation spike must choose the most direct httpz response path supported by the pinned dependency. Files must not be retained across requests. Any per-request path or body allocation uses the request arena and dies with the request.
+The implementation spike must choose the most direct httpz response path supported by the pinned dependency. Files must not be retained across requests. Any per-request path or body allocation uses the shared request/response arena and dies after the response is transmitted.
 
-The middleware does not add cache-control, ETag, compression, range, or transformation behavior. Such features remain independently composable.
+File metadata is obtained before body allocation. `HEAD` follows the same validation, lookup, regular-file, size-limit, and header path as `GET`, then returns without allocating or reading a file body.
+
+`Config.max_file_size` is `?u64` and defaults to `null` (unlimited). When configured, a regular file larger than the limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. The limit is checked from file metadata before converting the size to `usize` or allocating a body.
+
+The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching; it does not generate or allocate a runtime MIME registry.
+
+The middleware does not add cache-control, ETag, compression, range, `X-Content-Type-Options`, or transformation behavior. Such features remain independently composable.
 
 ## Errors and diagnostics
 
@@ -149,11 +157,12 @@ Tests are colocated with implementation where practical and use temporary direct
 - duplicate and malformed-prefix rejection,
 - successful `GET`,
 - bodyless `HEAD` with matching headers,
-- MIME detection and unknown-extension fallback,
+- case-insensitive MIME detection, textual charsets, and unknown-extension fallback,
 - fallthrough and strict `404`,
+- configured file-size limits for `GET` and `HEAD` without body allocation,
 - missing files and non-regular entries,
-- traversal through plain and encoded forms,
-- backslash, NUL, and absolute-path rejection,
+- traversal through plain, encoded, and double-encoded forms,
+- malformed percent escapes, encoded separators, backslash, NUL, and absolute-path rejection,
 - symlink confinement,
 - initialization cleanup after partial failure,
 - allocation-failure cleanliness,
