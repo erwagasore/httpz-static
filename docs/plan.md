@@ -16,7 +16,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
   *Done when:* Zig 0.16.0 can fetch dependencies, format the package, compile the root module, and run the initial test suite through the documented local CI step.
 
-- [ ] **feat(path): implement secure mount resolution**
+- [x] **feat(path): implement secure mount resolution**
 
   Add mount-prefix validation and normalization, duplicate detection support, longest-prefix matching with segment boundaries, and secure relative-path validation in `src/path.zig`, with focused unit tests. Validate raw `req.url.path`, percent-decode exactly once into the request arena, then validate the decoded path before filesystem access, following `SPEC.md:82` and `SPEC.md:109`.
 
