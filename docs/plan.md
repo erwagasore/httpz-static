@@ -50,7 +50,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
   *Done when:* The package passes its local CI gate on Zig 0.16.0, including a real httpz request/response test, encoded and double-encoded attack cases, allocation-free `HEAD`, and all specified confinement and cleanup cases.
 
-- [ ] **docs(api): document the finalized middleware API**
+- [x] **docs(api): document the finalized middleware API**
 
   Update `SPEC.md` first, then synchronize `README.md`, `docs/index.md`, and `CHANGELOG.md` with the implemented API, configuration, behavior, security posture, and local validation commands. Resolve the implementation-spike caveat in `SPEC.md:40` and preserve the documented structure from `SPEC.md:180`.
 
