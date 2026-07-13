@@ -30,7 +30,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
 ## Phase 2 — Middleware
 
-- [ ] **feat(middleware): manage configured mount roots**
+- [x] **feat(middleware): manage configured mount roots**
 
   Implement `Mount`, `Config`, `init`, and `deinit` in `src/root.zig` using httpz's middleware arena/allocator lifecycle; initialize the MIME resolver with `MiddlewareConfig.allocator` rather than its arena; open configured directories once relative to the working directory with no-follow behavior where supported; reject invalid configuration; and clean up all owned handles and allocations, including partial initialization failures. Follow `SPEC.md:40`, `SPEC.md:89`, and `SPEC.md:149`.
 
@@ -38,9 +38,9 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
 - [ ] **feat(middleware): serve static file requests**
 
-  Implement `execute` in `src/root.zig` for direct relative lookup beneath the selected retained root, regular-file `GET`, and bodyless `HEAD`; stat before allocation, enforce `Config.max_file_size`, set accurate headers, and use `executor.next()` for method or configured missing-file fallthrough. Follow `SPEC.md:103` and `SPEC.md:137`.
+  Implement `execute` in `src/root.zig` for component-wise, no-follow lookup beneath the selected retained root, regular-file `GET`, and bodyless `HEAD`; stat before allocation, enforce `Config.max_file_size`, set accurate headers, and use `executor.next()` for method or configured unavailable-file fallthrough. Follow `SPEC.md:103` and `SPEC.md:137`.
 
-  *Done when:* Middleware tests verify successful `GET` and allocation-free `HEAD` with matching headers, MIME fallback, configured size limits, methods outside the contract, missing and non-regular files, both missing-file policies, no per-request mount-tree walk, propagation of unexpected filesystem failures, and compile-level registration through `server.middleware(Static, ...)`.
+  *Done when:* Middleware tests verify successful `GET` and body-allocation-free `HEAD` with matching headers, MIME fallback, configured size limits, methods outside the contract, missing and non-regular files, intermediate and final symlink refusal, both unavailable-file policies, no unrelated mount-tree walk, allocation and unexpected filesystem failure propagation, and compile-level registration through `server.middleware(Static, ...)`.
 
 ## Phase 3 — Verification and documentation
 
