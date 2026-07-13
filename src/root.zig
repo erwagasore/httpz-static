@@ -9,6 +9,7 @@ pub const Mount = struct {
     /// Public URL namespace. Initialization validates and copies this value.
     url_prefix: []const u8,
     /// Non-empty path resolved relative to `Config.cwd` during initialization.
+    /// Trusted `.` and `..` segments are allowed.
     directory_path: []const u8,
 };
 
@@ -20,7 +21,9 @@ pub const Config = struct {
     cwd: std.Io.Dir = .cwd(),
     /// Borrowed for initialization; all retained values and handles are owned.
     mounts: []const Mount,
+    /// Continue the httpz chain when a matched file is unavailable or unsafe.
     fallthrough: bool = true,
+    /// Maximum served file size in bytes, or `null` for no configured limit.
     max_file_size: ?u64 = null,
     /// Borrowed for initialization and deep-copied by the MIME resolver.
     mime_overrides: []const MimeMapping = &.{},
@@ -250,9 +253,14 @@ test "init does not follow a symlink used as a mount root" {
         static.deinit();
         return error.TestUnexpectedResult;
     } else |err| switch (err) {
-        error.SymLinkLoop, error.NotDir => {},
+        error.FileNotFound, error.SymLinkLoop, error.NotDir => {},
         else => return err,
     }
+}
+
+test "directory paths allow trusted relative parent segments" {
+    try std.testing.expect(isRelativeDirectoryPath("../shared/assets"));
+    try std.testing.expect(isRelativeDirectoryPath("./assets"));
 }
 
 test "init cleans up every allocation failure" {
@@ -291,8 +299,4 @@ fn initWithAllocationFailures(
 
 fn middlewareConfig(allocator: std.mem.Allocator) httpz.MiddlewareConfig {
     return .{ .arena = allocator, .allocator = allocator };
-}
-
-test {
-    _ = path;
 }

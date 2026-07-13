@@ -95,7 +95,7 @@ Each mount maps exactly one URL prefix to one directory. This gives every filesy
 - Matching respects segment boundaries: `/assets` matches `/assets/logo.svg` but not `/assets-old/logo.svg`.
 - When prefixes overlap, the longest matching prefix wins regardless of declaration order.
 - Duplicate normalized prefixes are rejected during initialization.
-- Directory paths must be non-empty relative filesystem paths resolved beneath the configured working directory; absolute, drive-qualified, NUL-containing, and platform-rooted forms are rejected.
+- Directory paths must be non-empty filesystem paths resolved relative to the configured working directory. Trusted `.` and `..` segments are allowed, while absolute, drive-qualified, NUL-containing, and platform-rooted forms are rejected.
 - The middleware opens configured roots during initialization without following a final directory symlink and closes owned handles during teardown.
 
 Overlay/search-path directories under one prefix are outside the first release. They can be added later only with explicit precedence semantics.
