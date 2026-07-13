@@ -2,9 +2,17 @@ const std = @import("std");
 
 pub const fallback = "application/octet-stream";
 
-const Mapping = struct {
+pub const Mapping = struct {
+    /// Final file extension, including the leading dot.
     extension: []const u8,
+    /// Complete value for the HTTP `Content-Type` header.
     content_type: []const u8,
+};
+
+pub const MappingError = error{
+    InvalidExtension,
+    InvalidContentType,
+    DuplicateExtension,
 };
 
 const mappings = [_]Mapping{
@@ -58,9 +66,7 @@ comptime {
     @setEvalBranchQuota(10_000);
 
     for (mappings, 0..) |mapping, index| {
-        if (mapping.extension.len < 2 or mapping.extension[0] != '.') {
-            @compileError("MIME extensions must begin with a dot");
-        }
+        validateMapping(mapping) catch @compileError("invalid built-in MIME mapping");
         for (mappings[0..index]) |previous| {
             if (std.ascii.eqlIgnoreCase(mapping.extension, previous.extension)) {
                 @compileError("duplicate MIME extension: " ++ mapping.extension);
@@ -69,12 +75,34 @@ comptime {
     }
 }
 
+/// Validates user-provided mappings once during middleware initialization.
+pub fn validateMappings(overrides: []const Mapping) MappingError!void {
+    for (overrides, 0..) |mapping, index| {
+        try validateMapping(mapping);
+        for (overrides[0..index]) |previous| {
+            if (std.ascii.eqlIgnoreCase(mapping.extension, previous.extension)) {
+                return error.DuplicateExtension;
+            }
+        }
+    }
+}
+
 /// Returns the content type associated with the final extension in `path`.
 /// Matching is ASCII case-insensitive and does not allocate.
 pub fn fromPath(path: []const u8) []const u8 {
+    return fromPathWith(path, &.{});
+}
+
+/// Resolves prevalidated user overrides before consulting the built-in table.
+pub fn fromPathWith(path: []const u8, overrides: []const Mapping) []const u8 {
     const extension = std.fs.path.extension(path);
     if (extension.len == 0) return fallback;
 
+    for (overrides) |mapping| {
+        if (std.ascii.eqlIgnoreCase(extension, mapping.extension)) {
+            return mapping.content_type;
+        }
+    }
     for (mappings) |mapping| {
         if (std.ascii.eqlIgnoreCase(extension, mapping.extension)) {
             return mapping.content_type;
@@ -82,6 +110,38 @@ pub fn fromPath(path: []const u8) []const u8 {
     }
 
     return fallback;
+}
+
+fn validateMapping(mapping: Mapping) MappingError!void {
+    if (mapping.extension.len < 2 or mapping.extension[0] != '.') {
+        return error.InvalidExtension;
+    }
+    for (mapping.extension[1..]) |byte| {
+        if (byte < 0x21 or byte > 0x7e or byte == '.' or byte == '/' or byte == '\\') {
+            return error.InvalidExtension;
+        }
+    }
+
+    const media_type_end = std.mem.indexOfScalar(u8, mapping.content_type, ';') orelse
+        mapping.content_type.len;
+    const media_type = mapping.content_type[0..media_type_end];
+    const slash = std.mem.indexOfScalar(u8, media_type, '/') orelse
+        return error.InvalidContentType;
+    if (slash == 0 or slash + 1 == media_type.len) return error.InvalidContentType;
+
+    for (media_type, 0..) |byte, index| {
+        if (index != slash and !isTokenByte(byte)) return error.InvalidContentType;
+    }
+    for (mapping.content_type[media_type_end..]) |byte| {
+        if (byte < 0x20 or byte > 0x7e) return error.InvalidContentType;
+    }
+}
+
+fn isTokenByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or switch (byte) {
+        '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => true,
+        else => false,
+    };
 }
 
 test "fromPath resolves textual content types with conventional charsets" {
@@ -114,4 +174,72 @@ test "fromPath falls back for missing and unknown extensions" {
     try std.testing.expectEqualStrings(fallback, fromPath("LICENSE"));
     try std.testing.expectEqualStrings(fallback, fromPath("archive.unknown"));
     try std.testing.expectEqualStrings(fallback, fromPath("directory.with.dots/file"));
+}
+
+test "fromPathWith resolves additions and built-in overrides first" {
+    const overrides = [_]Mapping{
+        .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
+        .{ .extension = ".json", .content_type = "application/vnd.example+json" },
+    };
+    try validateMappings(&overrides);
+
+    try std.testing.expectEqualStrings(
+        "application/x-ndjson",
+        fromPathWith("events.JSONL", &overrides),
+    );
+    try std.testing.expectEqualStrings(
+        "application/vnd.example+json",
+        fromPathWith("data.json", &overrides),
+    );
+    try std.testing.expectEqualStrings("image/png", fromPathWith("logo.png", &overrides));
+    try std.testing.expectEqualStrings(fallback, fromPathWith("data.unknown", &overrides));
+}
+
+test "validateMappings rejects malformed extensions" {
+    const invalid = [_][]const u8{
+        "",
+        "jsonl",
+        ".tar.gz",
+        ".bad/path",
+        ".bad\\path",
+        ".with space",
+    };
+    for (invalid) |extension| {
+        try std.testing.expectError(
+            error.InvalidExtension,
+            validateMappings(&.{.{
+                .extension = extension,
+                .content_type = "application/octet-stream",
+            }}),
+        );
+    }
+}
+
+test "validateMappings rejects unsafe or malformed content types" {
+    const invalid = [_][]const u8{
+        "",
+        "application",
+        "application/",
+        "text/ plain",
+        "text/plain\r\nX-Injected: true",
+    };
+    for (invalid) |content_type| {
+        try std.testing.expectError(
+            error.InvalidContentType,
+            validateMappings(&.{.{
+                .extension = ".custom",
+                .content_type = content_type,
+            }}),
+        );
+    }
+}
+
+test "validateMappings rejects duplicate extensions case-insensitively" {
+    try std.testing.expectError(
+        error.DuplicateExtension,
+        validateMappings(&.{
+            .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
+            .{ .extension = ".JSONL", .content_type = "application/json" },
+        }),
+    );
 }
