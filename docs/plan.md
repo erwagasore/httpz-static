@@ -36,7 +36,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
   *Done when:* Tests verify valid multi-mount and MIME-resolver initialization, malformed and duplicate-prefix rejection, retained root handles, deterministic teardown, and cleanup after initialization or allocation failure.
 
-- [ ] **feat(middleware): serve static file requests**
+- [x] **feat(middleware): serve static file requests**
 
   Implement `execute` in `src/root.zig` for component-wise, no-follow lookup beneath the selected retained root, regular-file `GET`, and bodyless `HEAD`; stat before allocation, enforce `Config.max_file_size`, set accurate headers, and use `executor.next()` for method or configured unavailable-file fallthrough. Follow `SPEC.md:103` and `SPEC.md:137`.
 

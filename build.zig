@@ -24,18 +24,39 @@ pub fn build(b: *std.Build) void {
     });
     const run_tests = b.addRunArtifact(tests);
 
+    const integration_module = b.createModule(.{
+        .root_source_file = b.path("tests/integration.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "httpz-static", .module = module },
+            .{ .name = "httpz", .module = httpz.module("httpz") },
+        },
+    });
+    const integration_tests = b.addTest(.{
+        .name = "httpz-static-integration-test",
+        .root_module = integration_module,
+    });
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_integration_tests.step);
 
     const checks = b.addTest(.{
         .name = "httpz-static-check",
         .root_module = module,
     });
+    const integration_checks = b.addTest(.{
+        .name = "httpz-static-integration-check",
+        .root_module = integration_module,
+    });
     const check_step = b.step("check", "Compile without emitting binaries");
     check_step.dependOn(&checks.step);
+    check_step.dependOn(&integration_checks.step);
 
     const fmt = b.addFmt(.{
-        .paths = &.{ "build.zig", "build.zig.zon", "src" },
+        .paths = &.{ "build.zig", "build.zig.zon", "src", "tests" },
         .check = true,
     });
     const fmt_step = b.step("fmt", "Check formatting");

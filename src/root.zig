@@ -380,7 +380,7 @@ test "execute refuses final and intermediate symlinks" {
     try expectContentType(&static, "/assets/real/file.txt", "text/plain; charset=utf-8");
 }
 
-test "execute propagates unexpected file read failures" {
+test "execute propagates permission, I/O, and short-read failures" {
     const inner_io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -388,7 +388,6 @@ test "execute propagates unexpected file read failures" {
     try writeTestFile(tmp.dir, inner_io, "assets/file.txt", "contents");
 
     var counting_io = CountingIo.init(inner_io);
-    counting_io.fail_file_reads = true;
     const io = counting_io.io();
     var static = try Static.init(.{
         .io = io,
@@ -397,6 +396,22 @@ test "execute propagates unexpected file read failures" {
     }, middlewareConfig(std.testing.allocator));
     defer static.deinit();
 
+    counting_io.fail_file_opens = true;
+    var denied_ht = httpz.testing.init(.{});
+    defer denied_ht.deinit();
+    denied_ht.url("/assets/file.txt");
+    var denied_executor: TestExecutor = .{};
+    try std.testing.expectError(
+        error.AccessDenied,
+        static.execute(denied_ht.req, denied_ht.res, &denied_executor),
+    );
+    try std.testing.expect(!denied_executor.next_called);
+    try std.testing.expectEqualStrings("", denied_ht.res.body);
+    try std.testing.expectEqual(@as(usize, 0), denied_ht.res.headers.len);
+    try std.testing.expectEqual(@as(usize, 0), counting_io.closed_file_count);
+
+    counting_io.fail_file_opens = false;
+    counting_io.fail_file_reads = true;
     var ht = httpz.testing.init(.{});
     defer ht.deinit();
     ht.url("/assets/file.txt");
@@ -795,6 +810,7 @@ const CountingIo = struct {
     closed_dir_count: usize = 0,
     closed_file_count: usize = 0,
     file_read_count: usize = 0,
+    fail_file_opens: bool = false,
     fail_file_reads: bool = false,
     short_file_reads: bool = false,
 
@@ -838,6 +854,7 @@ const CountingIo = struct {
         options: std.Io.Dir.OpenFileOptions,
     ) std.Io.File.OpenError!std.Io.File {
         const self = get(userdata);
+        if (self.fail_file_opens) return error.AccessDenied;
         return self.inner.vtable.dirOpenFile(self.inner.userdata, dir, sub_path, options);
     }
 
