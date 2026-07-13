@@ -119,7 +119,7 @@ Before opening a file, the middleware must reject paths containing or resolving 
 - percent-encoded traversal or separator ambiguity,
 - platform-specific path forms that escape the selected root.
 
-The pinned httpz version exposes `req.url.path` as the raw request path with the query removed but without percent-decoding. The middleware first validates that raw representation, rejecting malformed escapes and encoded traversal or separator ambiguity. It then percent-decodes exactly once into the request arena and validates the decoded relative path again before any filesystem access. A decoded path that still contains percent-encoded traversal or separators is rejected as ambiguous rather than decoded a second time.
+The pinned httpz version exposes `req.url.path` as the raw request path with the query removed but without percent-decoding. The middleware first validates that raw representation, rejecting malformed escapes and encoded traversal or separator ambiguity. It then percent-decodes exactly once into the request arena and validates the decoded relative path again before any filesystem access. A decoded path that still contains any syntactically valid percent escape is rejected as ambiguous rather than decoded a second time.
 
 Configured root directories are opened once during initialization. Request lookup opens the validated relative path directly beneath the selected root; it must not scan or walk the entire mount tree per request.
 

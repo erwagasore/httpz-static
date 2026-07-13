@@ -1,9 +1,7 @@
 const std = @import("std");
 
-pub const PrefixError = error{
-    InvalidPrefix,
-    DuplicatePrefix,
-};
+pub const NormalizeError = error{InvalidPrefix};
+pub const DuplicateError = error{DuplicatePrefix};
 
 pub const PathError = error{
     MalformedEscape,
@@ -17,10 +15,11 @@ pub const Match = struct {
 
 /// Validates and copies a URL mount prefix in its canonical form.
 /// All trailing slashes are removed except for the root prefix itself.
+/// The caller owns the returned memory.
 pub fn normalizePrefix(
     allocator: std.mem.Allocator,
     prefix: []const u8,
-) (PrefixError || std.mem.Allocator.Error)![]u8 {
+) (NormalizeError || std.mem.Allocator.Error)![]u8 {
     if (prefix.len == 0 or prefix[0] != '/') return error.InvalidPrefix;
 
     var end = prefix.len;
@@ -50,7 +49,7 @@ pub fn normalizePrefix(
 }
 
 /// Rejects duplicate prefixes after they have been normalized.
-pub fn ensureUniquePrefixes(prefixes: []const []const u8) PrefixError!void {
+pub fn ensureUniquePrefixes(prefixes: []const []const u8) DuplicateError!void {
     for (prefixes, 0..) |prefix, index| {
         for (prefixes[0..index]) |previous| {
             if (std.mem.eql(u8, prefix, previous)) return error.DuplicatePrefix;
@@ -77,9 +76,11 @@ pub fn longestMatch(request_path: []const u8, prefixes: []const []const u8) ?Mat
 }
 
 /// Validates a raw relative URL path, decodes it exactly once, then validates
-/// the decoded filesystem-relative representation.
+/// the decoded filesystem-relative representation. The returned slice points
+/// into either `raw_path` or `request_arena` and remains valid for the request
+/// lifetime; callers must not free it individually.
 pub fn decodeAndValidate(
-    allocator: std.mem.Allocator,
+    request_arena: std.mem.Allocator,
     raw_path: []const u8,
 ) (PathError || std.mem.Allocator.Error)![]const u8 {
     try validateFilesystemRelative(raw_path);
@@ -105,8 +106,8 @@ pub fn decodeAndValidate(
 
     if (!has_escape) return raw_path;
 
-    const decoded = try allocator.alloc(u8, decoded_len);
-    errdefer allocator.free(decoded);
+    const decoded = try request_arena.alloc(u8, decoded_len);
+    errdefer request_arena.free(decoded);
 
     var input_index: usize = 0;
     var output_index: usize = 0;
@@ -249,15 +250,19 @@ test "longestMatch respects precedence and segment boundaries" {
     try std.testing.expect(longestMatch("relative", &prefixes) == null);
 }
 
-test "decodeAndValidate decodes safe paths exactly once" {
-    const allocator = std.testing.allocator;
+test "decodeAndValidate decodes safe paths into the request arena" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const request_arena = arena.allocator();
 
-    const decoded = try decodeAndValidate(allocator, "images/logo%20one%2Esvg");
-    defer allocator.free(decoded);
+    const decoded = try decodeAndValidate(request_arena, "images/logo%20one%2Esvg");
     try std.testing.expectEqualStrings("images/logo one.svg", decoded);
 
     const borrowed = "images/logo.svg";
-    try std.testing.expectEqualStrings(borrowed, try decodeAndValidate(allocator, borrowed));
+    try std.testing.expectEqualStrings(
+        borrowed,
+        try decodeAndValidate(request_arena, borrowed),
+    );
 }
 
 test "decodeAndValidate rejects unsafe filesystem forms" {
@@ -273,10 +278,10 @@ test "decodeAndValidate rejects unsafe filesystem forms" {
         "%2fetc/passwd",
         "images%5csecret",
         "images/%00secret",
-        "%43%3a/Windows/system.ini",
         "images%2flogo.svg",
         "%252e%252e/secret",
         "%252fetc/passwd",
+        "literal%2520escape",
     };
 
     for (unsafe) |path| {
@@ -285,6 +290,13 @@ test "decodeAndValidate rejects unsafe filesystem forms" {
             decodeAndValidate(std.testing.allocator, path),
         );
     }
+}
+
+test "decodeAndValidate frees decoded storage when validation fails" {
+    try std.testing.expectError(
+        error.UnsafePath,
+        decodeAndValidate(std.testing.allocator, "%43%3a/Windows/system.ini"),
+    );
 }
 
 test "decodeAndValidate rejects malformed percent escapes" {
@@ -299,8 +311,29 @@ test "decodeAndValidate rejects malformed percent escapes" {
 }
 
 test "decodeAndValidate permits dots outside traversal segments" {
-    const allocator = std.testing.allocator;
-    const decoded = try decodeAndValidate(allocator, ".hidden/file%2Ename");
-    defer allocator.free(decoded);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const decoded = try decodeAndValidate(arena.allocator(), ".hidden/file%2Ename");
     try std.testing.expectEqualStrings(".hidden/file.name", decoded);
+}
+
+test "allocating helpers report allocation failure" {
+    var normalize_failing = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(
+        error.OutOfMemory,
+        normalizePrefix(normalize_failing.allocator(), "/assets"),
+    );
+
+    var decode_failing = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(
+        error.OutOfMemory,
+        decodeAndValidate(decode_failing.allocator(), "images/logo%20one.svg"),
+    );
 }
