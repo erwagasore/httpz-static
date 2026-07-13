@@ -26,7 +26,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
   Add a compact static extension-to-MIME table and public `MimeMapping` override type in `src/mime.zig`, with ASCII case-insensitive matching, user-override precedence and validation, conventional UTF-8 charsets for textual types, and the required unknown-extension fallback. Follow `SPEC.md:103`, `SPEC.md:137`, and `SPEC.md:180` without adding a generated or runtime-allocated MIME registry.
 
-  *Done when:* Unit tests verify representative binary and textual extensions, mixed-case extensions, charset values, custom additions, built-in overrides, malformed and duplicate override rejection, and `application/octet-stream` for unknown or absent extensions.
+  *Done when:* Unit tests verify representative binary and textual extensions, mixed-case extensions, charset values, custom additions, built-in overrides, complete media-type validation, deep-copied override lifetimes and allocation-failure cleanup, duplicate rejection, and `application/octet-stream` for unknown or absent extensions.
 
 ## Phase 2 — Middleware
 

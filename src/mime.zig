@@ -2,20 +2,71 @@ const std = @import("std");
 
 pub const fallback = "application/octet-stream";
 
-pub const Mapping = struct {
+pub const MimeMapping = struct {
     /// Final file extension, including the leading dot.
     extension: []const u8,
     /// Complete value for the HTTP `Content-Type` header.
     content_type: []const u8,
 };
 
-pub const MappingError = error{
+pub const MimeMappingError = error{
     InvalidExtension,
     InvalidContentType,
     DuplicateExtension,
 };
 
-const mappings = [_]Mapping{
+/// Owns a validated deep copy of user MIME mappings.
+pub const OwnedMimeMappings = struct {
+    allocator: std.mem.Allocator,
+    values: []MimeMapping,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        mappings_to_copy: []const MimeMapping,
+    ) (MimeMappingError || std.mem.Allocator.Error)!OwnedMimeMappings {
+        try validateMappings(mappings_to_copy);
+
+        const values = try allocator.alloc(MimeMapping, mappings_to_copy.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (values[0..initialized]) |mapping| {
+                allocator.free(mapping.extension);
+                allocator.free(mapping.content_type);
+            }
+            allocator.free(values);
+        }
+
+        for (mappings_to_copy, 0..) |mapping, index| {
+            const extension = try allocator.dupe(u8, mapping.extension);
+            const content_type = allocator.dupe(u8, mapping.content_type) catch |err| {
+                allocator.free(extension);
+                return err;
+            };
+            values[index] = .{
+                .extension = extension,
+                .content_type = content_type,
+            };
+            initialized += 1;
+        }
+
+        return .{ .allocator = allocator, .values = values };
+    }
+
+    pub fn deinit(self: *OwnedMimeMappings) void {
+        for (self.values) |mapping| {
+            self.allocator.free(mapping.extension);
+            self.allocator.free(mapping.content_type);
+        }
+        self.allocator.free(self.values);
+        self.* = undefined;
+    }
+
+    pub fn slice(self: *const OwnedMimeMappings) []const MimeMapping {
+        return self.values;
+    }
+};
+
+const mappings = [_]MimeMapping{
     .{ .extension = ".html", .content_type = "text/html; charset=utf-8" },
     .{ .extension = ".htm", .content_type = "text/html; charset=utf-8" },
     .{ .extension = ".css", .content_type = "text/css; charset=utf-8" },
@@ -76,7 +127,7 @@ comptime {
 }
 
 /// Validates user-provided mappings once during middleware initialization.
-pub fn validateMappings(overrides: []const Mapping) MappingError!void {
+pub fn validateMappings(overrides: []const MimeMapping) MimeMappingError!void {
     for (overrides, 0..) |mapping, index| {
         try validateMapping(mapping);
         for (overrides[0..index]) |previous| {
@@ -94,7 +145,9 @@ pub fn fromPath(path: []const u8) []const u8 {
 }
 
 /// Resolves prevalidated user overrides before consulting the built-in table.
-pub fn fromPathWith(path: []const u8, overrides: []const Mapping) []const u8 {
+/// The result borrows static storage or an override content-type slice, so the
+/// overrides must outlive every response that uses the result.
+pub fn fromPathWith(path: []const u8, overrides: []const MimeMapping) []const u8 {
     const extension = std.fs.path.extension(path);
     if (extension.len == 0) return fallback;
 
@@ -112,7 +165,7 @@ pub fn fromPathWith(path: []const u8, overrides: []const Mapping) []const u8 {
     return fallback;
 }
 
-fn validateMapping(mapping: Mapping) MappingError!void {
+fn validateMapping(mapping: MimeMapping) MimeMappingError!void {
     if (mapping.extension.len < 2 or mapping.extension[0] != '.') {
         return error.InvalidExtension;
     }
@@ -132,9 +185,77 @@ fn validateMapping(mapping: Mapping) MappingError!void {
     for (media_type, 0..) |byte, index| {
         if (index != slash and !isTokenByte(byte)) return error.InvalidContentType;
     }
-    for (mapping.content_type[media_type_end..]) |byte| {
-        if (byte < 0x20 or byte > 0x7e) return error.InvalidContentType;
+    try validateParameters(mapping.content_type[media_type_end..]);
+}
+
+fn validateParameters(parameters: []const u8) MimeMappingError!void {
+    var index: usize = 0;
+    while (index < parameters.len) {
+        if (parameters[index] != ';') return error.InvalidContentType;
+        index += 1;
+        skipOptionalWhitespace(parameters, &index);
+
+        const name_start = index;
+        while (index < parameters.len and isTokenByte(parameters[index])) index += 1;
+        if (index == name_start) return error.InvalidContentType;
+
+        skipOptionalWhitespace(parameters, &index);
+        if (index == parameters.len or parameters[index] != '=') {
+            return error.InvalidContentType;
+        }
+        index += 1;
+        skipOptionalWhitespace(parameters, &index);
+        if (index == parameters.len) return error.InvalidContentType;
+
+        if (parameters[index] == '"') {
+            try consumeQuotedValue(parameters, &index);
+        } else {
+            const value_start = index;
+            while (index < parameters.len and isTokenByte(parameters[index])) index += 1;
+            if (index == value_start) return error.InvalidContentType;
+        }
+
+        skipOptionalWhitespace(parameters, &index);
+        if (index < parameters.len and parameters[index] != ';') {
+            return error.InvalidContentType;
+        }
     }
+}
+
+fn consumeQuotedValue(input: []const u8, index: *usize) MimeMappingError!void {
+    index.* += 1;
+    while (index.* < input.len) {
+        const byte = input[index.*];
+        switch (byte) {
+            '"' => {
+                index.* += 1;
+                return;
+            },
+            '\\' => {
+                index.* += 1;
+                if (index.* == input.len or !isQuotedPairByte(input[index.*])) {
+                    return error.InvalidContentType;
+                }
+            },
+            else => if (!isQuotedByte(byte)) return error.InvalidContentType,
+        }
+        index.* += 1;
+    }
+    return error.InvalidContentType;
+}
+
+fn skipOptionalWhitespace(input: []const u8, index: *usize) void {
+    while (index.* < input.len and (input[index.*] == ' ' or input[index.*] == '\t')) {
+        index.* += 1;
+    }
+}
+
+fn isQuotedByte(byte: u8) bool {
+    return byte == '\t' or (byte >= 0x20 and byte <= 0x7e and byte != '"');
+}
+
+fn isQuotedPairByte(byte: u8) bool {
+    return byte == '\t' or (byte >= 0x20 and byte <= 0x7e);
 }
 
 fn isTokenByte(byte: u8) bool {
@@ -177,9 +298,13 @@ test "fromPath falls back for missing and unknown extensions" {
 }
 
 test "fromPathWith resolves additions and built-in overrides first" {
-    const overrides = [_]Mapping{
+    const overrides = [_]MimeMapping{
         .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
         .{ .extension = ".json", .content_type = "application/vnd.example+json" },
+        .{
+            .extension = ".tmpl",
+            .content_type = "text/x-template; charset=utf-8; profile=\"compact v1\"",
+        },
     };
     try validateMappings(&overrides);
 
@@ -190,6 +315,10 @@ test "fromPathWith resolves additions and built-in overrides first" {
     try std.testing.expectEqualStrings(
         "application/vnd.example+json",
         fromPathWith("data.json", &overrides),
+    );
+    try std.testing.expectEqualStrings(
+        "text/x-template; charset=utf-8; profile=\"compact v1\"",
+        fromPathWith("page.tmpl", &overrides),
     );
     try std.testing.expectEqualStrings("image/png", fromPathWith("logo.png", &overrides));
     try std.testing.expectEqualStrings(fallback, fromPathWith("data.unknown", &overrides));
@@ -221,6 +350,12 @@ test "validateMappings rejects unsafe or malformed content types" {
         "application",
         "application/",
         "text/ plain",
+        "text/plain;;;;",
+        "text/plain; invalid parameter",
+        "text/plain; charset",
+        "text/plain; charset=",
+        "text/plain; profile=\"unterminated",
+        "text/plain; profile=\"bad\\",
         "text/plain\r\nX-Injected: true",
     };
     for (invalid) |content_type| {
@@ -242,4 +377,45 @@ test "validateMappings rejects duplicate extensions case-insensitively" {
             .{ .extension = ".JSONL", .content_type = "application/json" },
         }),
     );
+}
+
+test "OwnedMimeMappings retains a deep copy" {
+    var extension = ".jsonl".*;
+    var content_type = "application/x-ndjson".*;
+    const source = [_]MimeMapping{.{
+        .extension = &extension,
+        .content_type = &content_type,
+    }};
+
+    var owned = try OwnedMimeMappings.init(std.testing.allocator, &source);
+    defer owned.deinit();
+
+    extension[1] = 'x';
+    content_type[0] = 'X';
+
+    try std.testing.expectEqualStrings(".jsonl", owned.slice()[0].extension);
+    try std.testing.expectEqualStrings(
+        "application/x-ndjson",
+        owned.slice()[0].content_type,
+    );
+    try std.testing.expectEqualStrings(
+        "application/x-ndjson",
+        fromPathWith("events.jsonl", owned.slice()),
+    );
+}
+
+test "OwnedMimeMappings cleans up every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        initOwnedMimeMappings,
+        .{},
+    );
+}
+
+fn initOwnedMimeMappings(allocator: std.mem.Allocator) !void {
+    var owned = try OwnedMimeMappings.init(allocator, &.{
+        .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
+        .{ .extension = ".tmpl", .content_type = "text/x-template; charset=utf-8" },
+    });
+    defer owned.deinit();
 }
