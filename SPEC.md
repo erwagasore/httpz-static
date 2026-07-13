@@ -142,7 +142,7 @@ File metadata is obtained before body allocation. `HEAD` follows the same valida
 
 `Config.max_file_size` is `?u64` and defaults to `null` (unlimited). When configured, a regular file larger than the limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. The limit is checked from file metadata before converting the size to `usize` or allocating a body.
 
-The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching and an optional, linearly searched slice of user overrides; it does not generate or allocate a runtime MIME registry. Override extensions and complete media-type syntax are validated during initialization, and duplicate override extensions are rejected case-insensitively. The override slice and both strings in every mapping are deep-copied into middleware-owned storage during initialization and released during teardown, so callers do not need to retain configuration memory.
+The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching and an optional, linearly searched slice of user overrides; it does not generate or allocate a runtime MIME registry. Override extensions and complete media-type syntax are validated during initialization, and duplicate override extensions are rejected case-insensitively. The internal MIME resolver deep-copies the override slice and both strings in every mapping during initialization and releases them during teardown, so callers do not need to retain configuration memory.
 
 The middleware does not add cache-control, ETag, compression, range, `X-Content-Type-Options`, or transformation behavior. Such features remain independently composable.
 

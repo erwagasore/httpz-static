@@ -15,54 +15,55 @@ pub const MimeMappingError = error{
     DuplicateExtension,
 };
 
-/// Owns a validated deep copy of user MIME mappings.
-pub const OwnedMimeMappings = struct {
+/// Resolves file paths using validated, deeply owned user overrides before
+/// consulting the built-in MIME table and binary fallback.
+pub const MimeResolver = struct {
     allocator: std.mem.Allocator,
-    values: []MimeMapping,
+    overrides: []MimeMapping,
 
     pub fn init(
         allocator: std.mem.Allocator,
-        mappings_to_copy: []const MimeMapping,
-    ) (MimeMappingError || std.mem.Allocator.Error)!OwnedMimeMappings {
-        try validateMappings(mappings_to_copy);
+        overrides_to_copy: []const MimeMapping,
+    ) (MimeMappingError || std.mem.Allocator.Error)!MimeResolver {
+        try validateMappings(overrides_to_copy);
 
-        const values = try allocator.alloc(MimeMapping, mappings_to_copy.len);
+        const overrides = try allocator.alloc(MimeMapping, overrides_to_copy.len);
         var initialized: usize = 0;
         errdefer {
-            for (values[0..initialized]) |mapping| {
+            for (overrides[0..initialized]) |mapping| {
                 allocator.free(mapping.extension);
                 allocator.free(mapping.content_type);
             }
-            allocator.free(values);
+            allocator.free(overrides);
         }
 
-        for (mappings_to_copy, 0..) |mapping, index| {
+        for (overrides_to_copy, 0..) |mapping, index| {
             const extension = try allocator.dupe(u8, mapping.extension);
             const content_type = allocator.dupe(u8, mapping.content_type) catch |err| {
                 allocator.free(extension);
                 return err;
             };
-            values[index] = .{
+            overrides[index] = .{
                 .extension = extension,
                 .content_type = content_type,
             };
             initialized += 1;
         }
 
-        return .{ .allocator = allocator, .values = values };
+        return .{ .allocator = allocator, .overrides = overrides };
     }
 
-    pub fn deinit(self: *OwnedMimeMappings) void {
-        for (self.values) |mapping| {
+    pub fn deinit(self: *MimeResolver) void {
+        for (self.overrides) |mapping| {
             self.allocator.free(mapping.extension);
             self.allocator.free(mapping.content_type);
         }
-        self.allocator.free(self.values);
+        self.allocator.free(self.overrides);
         self.* = undefined;
     }
 
-    pub fn slice(self: *const OwnedMimeMappings) []const MimeMapping {
-        return self.values;
+    pub fn fromPath(self: *const MimeResolver, path: []const u8) []const u8 {
+        return fromPathWith(path, self.overrides);
     }
 };
 
@@ -297,7 +298,7 @@ test "fromPath falls back for missing and unknown extensions" {
     try std.testing.expectEqualStrings(fallback, fromPath("directory.with.dots/file"));
 }
 
-test "fromPathWith resolves additions and built-in overrides first" {
+test "MimeResolver resolves additions and built-in overrides first" {
     const overrides = [_]MimeMapping{
         .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
         .{ .extension = ".json", .content_type = "application/vnd.example+json" },
@@ -306,22 +307,23 @@ test "fromPathWith resolves additions and built-in overrides first" {
             .content_type = "text/x-template; charset=utf-8; profile=\"compact v1\"",
         },
     };
-    try validateMappings(&overrides);
+    var resolver = try MimeResolver.init(std.testing.allocator, &overrides);
+    defer resolver.deinit();
 
     try std.testing.expectEqualStrings(
         "application/x-ndjson",
-        fromPathWith("events.JSONL", &overrides),
+        resolver.fromPath("events.JSONL"),
     );
     try std.testing.expectEqualStrings(
         "application/vnd.example+json",
-        fromPathWith("data.json", &overrides),
+        resolver.fromPath("data.json"),
     );
     try std.testing.expectEqualStrings(
         "text/x-template; charset=utf-8; profile=\"compact v1\"",
-        fromPathWith("page.tmpl", &overrides),
+        resolver.fromPath("page.tmpl"),
     );
-    try std.testing.expectEqualStrings("image/png", fromPathWith("logo.png", &overrides));
-    try std.testing.expectEqualStrings(fallback, fromPathWith("data.unknown", &overrides));
+    try std.testing.expectEqualStrings("image/png", resolver.fromPath("logo.png"));
+    try std.testing.expectEqualStrings(fallback, resolver.fromPath("data.unknown"));
 }
 
 test "validateMappings rejects malformed extensions" {
@@ -379,7 +381,7 @@ test "validateMappings rejects duplicate extensions case-insensitively" {
     );
 }
 
-test "OwnedMimeMappings retains a deep copy" {
+test "MimeResolver retains a deep copy" {
     var extension = ".jsonl".*;
     var content_type = "application/x-ndjson".*;
     const source = [_]MimeMapping{.{
@@ -387,35 +389,30 @@ test "OwnedMimeMappings retains a deep copy" {
         .content_type = &content_type,
     }};
 
-    var owned = try OwnedMimeMappings.init(std.testing.allocator, &source);
-    defer owned.deinit();
+    var resolver = try MimeResolver.init(std.testing.allocator, &source);
+    defer resolver.deinit();
 
     extension[1] = 'x';
     content_type[0] = 'X';
 
-    try std.testing.expectEqualStrings(".jsonl", owned.slice()[0].extension);
     try std.testing.expectEqualStrings(
         "application/x-ndjson",
-        owned.slice()[0].content_type,
-    );
-    try std.testing.expectEqualStrings(
-        "application/x-ndjson",
-        fromPathWith("events.jsonl", owned.slice()),
+        resolver.fromPath("events.jsonl"),
     );
 }
 
-test "OwnedMimeMappings cleans up every allocation failure" {
+test "MimeResolver cleans up every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
-        initOwnedMimeMappings,
+        initMimeResolver,
         .{},
     );
 }
 
-fn initOwnedMimeMappings(allocator: std.mem.Allocator) !void {
-    var owned = try OwnedMimeMappings.init(allocator, &.{
+fn initMimeResolver(allocator: std.mem.Allocator) !void {
+    var resolver = try MimeResolver.init(allocator, &.{
         .{ .extension = ".jsonl", .content_type = "application/x-ndjson" },
         .{ .extension = ".tmpl", .content_type = "text/x-template; charset=utf-8" },
     });
-    defer owned.deinit();
+    defer resolver.deinit();
 }
