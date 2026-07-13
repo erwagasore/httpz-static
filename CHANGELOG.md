@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] — 2026-07-13
+
+### Features
 
 - Zig 0.16.0 package and build steps for formatting, compile checks, tests, CI, and the runnable example.
 - httpz middleware registration with multiple explicit URL-prefix mounts and longest-prefix routing.
@@ -17,3 +19,7 @@
 - Validate raw paths, decode percent escapes exactly once, and reject traversal, ambiguous encoding, encoded separators, backslashes, NUL bytes, and platform-rooted paths.
 - Resolve request paths component by component beneath retained mount handles without following root, intermediate, or final symlinks.
 - Serve only regular files and return indistinguishable unavailable-file responses under strict mode.
+
+### Other
+
+- Bootstrap repository documentation and promote the completed first implementation cycle.
