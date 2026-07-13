@@ -95,8 +95,8 @@ Each mount maps exactly one URL prefix to one directory. This gives every filesy
 - Matching respects segment boundaries: `/assets` matches `/assets/logo.svg` but not `/assets-old/logo.svg`.
 - When prefixes overlap, the longest matching prefix wins regardless of declaration order.
 - Duplicate normalized prefixes are rejected during initialization.
-- Directory paths are resolved relative to the configured working directory unless a later API revision deliberately adds borrowed directory handles.
-- The middleware opens configured roots during initialization and closes owned handles during teardown.
+- Directory paths must be non-empty relative filesystem paths resolved beneath the configured working directory; absolute, drive-qualified, NUL-containing, and platform-rooted forms are rejected.
+- The middleware opens configured roots during initialization without following a final directory symlink and closes owned handles during teardown.
 
 Overlay/search-path directories under one prefix are outside the first release. They can be added later only with explicit precedence semantics.
 
@@ -148,7 +148,7 @@ The middleware does not add cache-control, ETag, compression, range, `X-Content-
 
 ## Errors and diagnostics
 
-- Invalid static configuration, including malformed or duplicate MIME overrides, fails middleware initialization.
+- Invalid static configuration, including an empty mount list, malformed mount paths, and malformed or duplicate MIME overrides, fails middleware initialization.
 - Configuration errors use a closed package error set where practical.
 - Missing files and unsafe paths are ordinary request outcomes, not logged server failures.
 - Permission, I/O, allocation, and unexpected filesystem errors propagate.
@@ -161,7 +161,7 @@ Tests are colocated with implementation where practical and use temporary direct
 - multiple independent mounts,
 - longest-prefix selection,
 - prefix segment boundaries,
-- duplicate and malformed-prefix rejection,
+- empty-mount, duplicate and malformed-prefix, and malformed-directory-path rejection,
 - successful `GET`,
 - bodyless `HEAD` with matching headers,
 - case-insensitive MIME detection, textual charsets, user-override precedence and validation, and unknown-extension fallback,
