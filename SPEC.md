@@ -37,9 +37,9 @@ The package does not own:
 
 Watching belongs to development tooling such as a separate `httpz-livereload` watcher API. Compression and other response-wide behavior belong to independent middleware that can also apply to HTML and API responses.
 
-## Intended public API
+## Public API
 
-The initial API target is:
+The finalized httpz middleware registration API is:
 
 ```zig
 const Static = @import("httpz-static");
@@ -64,19 +64,31 @@ const static = try server.middleware(Static, .{
 });
 ```
 
-The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary. `Config.max_file_size` defaults to 64 MiB; applications may set another bound or explicitly use `null` for unlimited file-body allocation.
-
 The root module exposes the normal httpz middleware contract:
 
 ```zig
-pub const Mount = struct { ... };
+pub const Mount = struct {
+    url_prefix: []const u8,
+    directory_path: []const u8,
+};
+
 pub const MimeMapping = struct {
     extension: []const u8,
     content_type: []const u8,
 };
-pub const Config = struct { ... };
 
-pub fn init(config: Config, mc: httpz.MiddlewareConfig) !Static;
+pub const default_max_file_size: u64 = 64 * 1024 * 1024;
+
+pub const Config = struct {
+    io: std.Io,
+    cwd: std.Io.Dir = .cwd(),
+    mounts: []const Mount,
+    fallthrough: bool = true,
+    max_file_size: ?u64 = default_max_file_size,
+    mime_overrides: []const MimeMapping = &.{},
+};
+
+pub fn init(config: Config, mc: httpz.MiddlewareConfig) InitError!Static;
 pub fn deinit(self: *Static) void;
 pub fn execute(
     self: *Static,
@@ -85,6 +97,8 @@ pub fn execute(
     executor: anytype,
 ) !void;
 ```
+
+`InitError` is public and composes the package's closed configuration errors with allocator and directory-open errors. Its exact declaration in [`src/root.zig`](src/root.zig) is the source of truth.
 
 ## Mount semantics
 
@@ -175,9 +189,9 @@ Tests are colocated with implementation where practical and use temporary direct
 - allocation-failure cleanliness,
 - compile-level `server.middleware` registration and a real httpz server integration test.
 
-The local CI gate will run formatting, compile checks, and tests under Zig 0.16.0.
+The local CI gate runs formatting, unit and integration compile checks, the runnable example compile check, and all tests under Zig 0.16.0 through `zig build ci`.
 
-## Initial source layout
+## Source layout
 
 ```text
 build.zig              # build graph and fmt/check/test/ci steps
@@ -185,7 +199,9 @@ build.zig.zon          # package metadata, version, Zig minimum, pinned httpz
 src/root.zig           # public middleware contract and orchestration
 src/path.zig           # prefix matching and secure relative-path validation
 src/mime.zig           # extension-to-content-type mapping
-tests/                 # real-server integration fixtures/tests when needed
+tests/                 # real-server integration tests
+examples/basic.zig     # runnable middleware example
+examples/public/       # files served by the example
 README.md              # overview and public usage
 SPEC.md                # normative implementation contract
 AGENTS.md               # operating contract and repo map

@@ -44,7 +44,7 @@ Deliver the first working `httpz-static` release with secure mount resolution, s
 
 ## Phase 3 — Verification and documentation
 
-- [ ] **test(integration): verify middleware behavior with httpz**
+- [x] **test(integration): verify middleware behavior with httpz**
 
   Add real-server integration tests under `tests/` and complete security-sensitive coverage for raw-path handling, single decoding, symlink confinement, filesystem errors, size limits, and allocation-failure cleanliness. Satisfy the path-security and testing contracts in `SPEC.md:116` and `SPEC.md:157`.
 
