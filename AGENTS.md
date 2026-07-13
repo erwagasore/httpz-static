@@ -28,8 +28,12 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Repo map
 
+- `src/` — middleware implementation, secure path handling, and MIME resolution.
+- `tests/` — real-server httpz integration coverage.
+- `examples/` — runnable basic server and static fixture.
+- `build.zig` / `build.zig.zon` — Zig package and validation graph.
 - `SPEC.md` — normative middleware contract, boundaries, security rules, and implementation decisions.
-- `README.md` — project overview and intended public API.
+- `README.md` — project overview and finalized public API.
 - `CHANGELOG.md` — user-facing release history.
 - `docs/` — documentation index and future guides.
 - `LICENSE` — MIT licence.
@@ -59,6 +63,6 @@ When behavior or structure changes, update `SPEC.md` first, then this repo map, 
 
 ## Orientation
 
-- **Entry point**: Start with `SPEC.md` for the contract; implementation will live under `src/` once scaffolded.
+- **Entry point**: Start with `SPEC.md` for the contract and `src/root.zig` for the public middleware API.
 - **Domain**: Narrow, composable static-file serving middleware for httpz.
 - **Tech stack**: Zig 0.16.0, std.Io, httpz, and the Zig build system.

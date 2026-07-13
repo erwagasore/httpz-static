@@ -43,6 +43,27 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 
+    const example_module = b.createModule(.{
+        .root_source_file = b.path("examples/basic.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "httpz-static", .module = module },
+            .{ .name = "httpz", .module = httpz.module("httpz") },
+        },
+    });
+    const example = b.addExecutable(.{
+        .name = "httpz-static-example",
+        .root_module = example_module,
+    });
+    const example_step = b.step("example", "Build the basic example");
+    example_step.dependOn(&example.step);
+
+    const run_example = b.addRunArtifact(example);
+    run_example.setCwd(b.path("."));
+    const run_example_step = b.step("run-example", "Run the basic example");
+    run_example_step.dependOn(&run_example.step);
+
     const checks = b.addTest(.{
         .name = "httpz-static-check",
         .root_module = module,
@@ -54,9 +75,10 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Compile without emitting binaries");
     check_step.dependOn(&checks.step);
     check_step.dependOn(&integration_checks.step);
+    check_step.dependOn(&example.step);
 
     const fmt = b.addFmt(.{
-        .paths = &.{ "build.zig", "build.zig.zon", "src", "tests" },
+        .paths = &.{ "build.zig", "build.zig.zon", "src", "tests", "examples" },
         .check = true,
     });
     const fmt_step = b.step("fmt", "Check formatting");
