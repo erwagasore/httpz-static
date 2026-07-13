@@ -64,7 +64,7 @@ const static = try server.middleware(Static, .{
 });
 ```
 
-The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary. `Config.max_file_size` is optional and defaults to unlimited; applications can set it to bound per-request file-body allocation.
+The implementation spike may adjust field spelling to fit Zig and std.Io conventions, but not the responsibility boundary. `Config.max_file_size` defaults to 64 MiB; applications may set another bound or explicitly use `null` for unlimited file-body allocation.
 
 The root module exposes the normal httpz middleware contract:
 
@@ -108,7 +108,7 @@ Overlay/search-path directories under one prefix are outside the first release. 
 - Other methods call `executor.next()` so another application handler can decide their semantics.
 - Directories are not listed or served as implicit index files in the first release.
 - Non-regular filesystem entries are treated as missing.
-- When a matched file is missing, `fallthrough = true` calls `executor.next()` and `fallthrough = false` returns `404`.
+- When a matched file is missing, unsafe, oversized, or non-regular, `fallthrough = true` calls `executor.next()` and `fallthrough = false` returns the same `404 Not Found` response.
 - Unexpected filesystem failures propagate as server errors rather than being disguised as missing files.
 
 Successful responses include an extension-derived `Content-Type` and accurate `Content-Length`. Extension matching is ASCII case-insensitive. Textual types include an appropriate UTF-8 charset where conventional, and unknown extensions use `application/octet-stream`. `Config.mime_overrides` defaults to an empty slice; configured mappings are checked before the built-in table, allowing applications to add new extensions or replace built-in content types.
@@ -128,19 +128,19 @@ Before opening a file, the middleware must reject paths containing or resolving 
 
 The pinned httpz version exposes `req.url.path` as the raw request path with the query removed but without percent-decoding. The middleware first validates that raw representation, rejecting malformed escapes and encoded traversal or separator ambiguity. It then percent-decodes exactly once into the request arena and validates the decoded relative path again before any filesystem access. A decoded path that still contains any syntactically valid percent escape is rejected as ambiguous rather than decoded a second time.
 
-Configured root directories are opened once during initialization. Request lookup opens the validated relative path directly beneath the selected root; it must not scan or walk the entire mount tree per request.
+Configured root directories are opened once during initialization. Request lookup walks only the validated path components, opening each intermediate directory relative to the previous handle without following symlinks, then opens the final regular file with no-follow and resolve-beneath options. It must not scan or walk unrelated entries in the mount tree.
 
-Symlink behavior must be tested and documented before the first release. The default posture is deny escape through symlinks; if Zig's portable std.Io surface cannot guarantee that policy, initialization or lookup must fail safely rather than claim confinement it does not provide.
+Configured root symlinks and both intermediate and final request-path symlinks are denied. Unsupported or ambiguous platform behavior fails safely rather than claiming confinement it does not provide. Mounted trees are trusted against adversarial concurrent replacement with special files: metadata is checked before and after opening, but portable std.Io cannot make the metadata check and readable open one atomic operation.
 
 Unsafe paths are not passed to filesystem APIs. They receive `404` or fall through according to the same non-disclosure policy as missing files.
 
 ## Response and allocation model
 
-The implementation spike must choose the most direct httpz response path supported by the pinned dependency. Files must not be retained across requests. Any per-request path or body allocation uses the shared request/response arena and dies after the response is transmitted.
+Files are opened and read only for the current request and are closed before `execute` returns. Any decoded path, explicit `HEAD` content-length header, or file-body allocation uses the shared request/response arena and dies after the response is transmitted. For `GET`, httpz derives the single wire-level `Content-Length` from the body slice; the middleware sets it explicitly only for bodyless `HEAD`.
 
-File metadata is obtained before body allocation. `HEAD` follows the same validation, lookup, regular-file, size-limit, and header path as `GET`, then returns without allocating or reading a file body.
+File metadata is obtained before body allocation, and non-regular entries are rejected before a body read is attempted. `HEAD` follows the same validation, lookup, regular-file, size-limit, and header path as `GET`, then returns without allocating or reading a file body. `GET` allocates exactly the stat-reported size, reads positionally into that response-lifetime slice, and propagates short reads or unexpected I/O failures.
 
-`Config.max_file_size` is `?u64` and defaults to `null` (unlimited). When configured, a regular file larger than the limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. The limit is checked from file metadata before converting the size to `usize` or allocating a body.
+`Config.max_file_size` is `?u64` and defaults to 64 MiB. A regular file larger than the configured limit is treated as unavailable and follows the configured fallthrough or strict `404` policy. `null` explicitly opts into unlimited buffering. The limit is checked from file metadata before converting the size to `usize` or allocating a body; peak per-request body memory is approximately the served file size.
 
 The middleware uses a compact, static MIME table with ASCII case-insensitive extension matching and an optional, linearly searched slice of user overrides; it does not generate or allocate a runtime MIME registry. Override extensions and the media `type/subtype` are validated during initialization, duplicate override extensions are rejected case-insensitively, and optional parameter bytes are treated as opaque printable ASCII so they cannot inject response headers. The internal MIME resolver deep-copies the override slice and both strings in every mapping into a dedicated arena backed by `httpz.MiddlewareConfig.allocator`, never `MiddlewareConfig.arena`, and releases its arena during teardown. This provides deterministic rollback and cleanup, and callers do not need to retain configuration memory.
 
@@ -173,7 +173,7 @@ Tests are colocated with implementation where practical and use temporary direct
 - symlink confinement,
 - initialization cleanup after partial failure,
 - allocation-failure cleanliness,
-- a real httpz server integration test.
+- compile-level `server.middleware` registration and a real httpz server integration test.
 
 The local CI gate will run formatting, compile checks, and tests under Zig 0.16.0.
 
