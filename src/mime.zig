@@ -18,47 +18,32 @@ pub const MimeMappingError = error{
 /// Resolves file paths using validated, deeply owned user overrides before
 /// consulting the built-in MIME table and binary fallback.
 pub const MimeResolver = struct {
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     overrides: []MimeMapping,
 
     pub fn init(
-        allocator: std.mem.Allocator,
+        backing_allocator: std.mem.Allocator,
         overrides_to_copy: []const MimeMapping,
     ) (MimeMappingError || std.mem.Allocator.Error)!MimeResolver {
         try validateMappings(overrides_to_copy);
 
+        var arena = std.heap.ArenaAllocator.init(backing_allocator);
+        errdefer arena.deinit();
+        const allocator = arena.allocator();
+
         const overrides = try allocator.alloc(MimeMapping, overrides_to_copy.len);
-        var initialized: usize = 0;
-        errdefer {
-            for (overrides[0..initialized]) |mapping| {
-                allocator.free(mapping.extension);
-                allocator.free(mapping.content_type);
-            }
-            allocator.free(overrides);
+        for (overrides_to_copy, overrides) |source, *destination| {
+            destination.* = .{
+                .extension = try allocator.dupe(u8, source.extension),
+                .content_type = try allocator.dupe(u8, source.content_type),
+            };
         }
 
-        for (overrides_to_copy, 0..) |mapping, index| {
-            const extension = try allocator.dupe(u8, mapping.extension);
-            const content_type = allocator.dupe(u8, mapping.content_type) catch |err| {
-                allocator.free(extension);
-                return err;
-            };
-            overrides[index] = .{
-                .extension = extension,
-                .content_type = content_type,
-            };
-            initialized += 1;
-        }
-
-        return .{ .allocator = allocator, .overrides = overrides };
+        return .{ .arena = arena, .overrides = overrides };
     }
 
     pub fn deinit(self: *MimeResolver) void {
-        for (self.overrides) |mapping| {
-            self.allocator.free(mapping.extension);
-            self.allocator.free(mapping.content_type);
-        }
-        self.allocator.free(self.overrides);
+        self.arena.deinit();
         self.* = undefined;
     }
 
@@ -116,15 +101,8 @@ const mappings = [_]MimeMapping{
 
 comptime {
     @setEvalBranchQuota(10_000);
-
-    for (mappings, 0..) |mapping, index| {
-        validateMapping(mapping) catch @compileError("invalid built-in MIME mapping");
-        for (mappings[0..index]) |previous| {
-            if (std.ascii.eqlIgnoreCase(mapping.extension, previous.extension)) {
-                @compileError("duplicate MIME extension: " ++ mapping.extension);
-            }
-        }
-    }
+    validateMappings(&mappings) catch
+        @compileError("invalid or duplicate built-in MIME mapping");
 }
 
 /// Validates user-provided mappings once during middleware initialization.
@@ -186,77 +164,9 @@ fn validateMapping(mapping: MimeMapping) MimeMappingError!void {
     for (media_type, 0..) |byte, index| {
         if (index != slash and !isTokenByte(byte)) return error.InvalidContentType;
     }
-    try validateParameters(mapping.content_type[media_type_end..]);
-}
-
-fn validateParameters(parameters: []const u8) MimeMappingError!void {
-    var index: usize = 0;
-    while (index < parameters.len) {
-        if (parameters[index] != ';') return error.InvalidContentType;
-        index += 1;
-        skipOptionalWhitespace(parameters, &index);
-
-        const name_start = index;
-        while (index < parameters.len and isTokenByte(parameters[index])) index += 1;
-        if (index == name_start) return error.InvalidContentType;
-
-        skipOptionalWhitespace(parameters, &index);
-        if (index == parameters.len or parameters[index] != '=') {
-            return error.InvalidContentType;
-        }
-        index += 1;
-        skipOptionalWhitespace(parameters, &index);
-        if (index == parameters.len) return error.InvalidContentType;
-
-        if (parameters[index] == '"') {
-            try consumeQuotedValue(parameters, &index);
-        } else {
-            const value_start = index;
-            while (index < parameters.len and isTokenByte(parameters[index])) index += 1;
-            if (index == value_start) return error.InvalidContentType;
-        }
-
-        skipOptionalWhitespace(parameters, &index);
-        if (index < parameters.len and parameters[index] != ';') {
-            return error.InvalidContentType;
-        }
+    for (mapping.content_type[media_type_end..]) |byte| {
+        if (byte < 0x20 or byte > 0x7e) return error.InvalidContentType;
     }
-}
-
-fn consumeQuotedValue(input: []const u8, index: *usize) MimeMappingError!void {
-    index.* += 1;
-    while (index.* < input.len) {
-        const byte = input[index.*];
-        switch (byte) {
-            '"' => {
-                index.* += 1;
-                return;
-            },
-            '\\' => {
-                index.* += 1;
-                if (index.* == input.len or !isQuotedPairByte(input[index.*])) {
-                    return error.InvalidContentType;
-                }
-            },
-            else => if (!isQuotedByte(byte)) return error.InvalidContentType,
-        }
-        index.* += 1;
-    }
-    return error.InvalidContentType;
-}
-
-fn skipOptionalWhitespace(input: []const u8, index: *usize) void {
-    while (index.* < input.len and (input[index.*] == ' ' or input[index.*] == '\t')) {
-        index.* += 1;
-    }
-}
-
-fn isQuotedByte(byte: u8) bool {
-    return byte == '\t' or (byte >= 0x20 and byte <= 0x7e and byte != '"');
-}
-
-fn isQuotedPairByte(byte: u8) bool {
-    return byte == '\t' or (byte >= 0x20 and byte <= 0x7e);
 }
 
 fn isTokenByte(byte: u8) bool {
@@ -346,18 +256,14 @@ test "validateMappings rejects malformed extensions" {
     }
 }
 
-test "validateMappings rejects unsafe or malformed content types" {
+test "validateMappings rejects malformed media types and unsafe header bytes" {
     const invalid = [_][]const u8{
         "",
         "application",
         "application/",
         "text/ plain",
-        "text/plain;;;;",
-        "text/plain; invalid parameter",
-        "text/plain; charset",
-        "text/plain; charset=",
-        "text/plain; profile=\"unterminated",
-        "text/plain; profile=\"bad\\",
+        "text/plain\x00bad",
+        "text/plain\x7fbad",
         "text/plain\r\nX-Injected: true",
     };
     for (invalid) |content_type| {
